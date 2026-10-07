@@ -13,6 +13,11 @@ TOP_ORIGINS = ["양서면", "양평읍", "서종면"]
 CORE_DESTINATIONS = ["덕풍3동", "미사1동", "신장2동"]
 TRANSFER_SCENARIOS = [0.05, 0.10, 0.20]
 
+# 한국환경공단 2024.10 감축원단위 산정근거에 제시된 인·km 기준 원단위.
+CAR_GHG_KG_PER_PKM = 0.2111
+BUS_GHG_KG_PER_PKM = 0.0291
+NET_BUS_SHIFT_KG_PER_PKM = CAR_GHG_KG_PER_PKM - BUS_GHG_KG_PER_PKM
+
 
 def read_inputs():
     return {
@@ -21,6 +26,8 @@ def read_inputs():
         "purposes": pd.read_csv(DATA / "purpose_totals.csv"),
         "mode": pd.read_csv(DATA / "mode_inputs.csv"),
         "transit": pd.read_csv(DATA / "transit_supply.csv"),
+        "equity": pd.read_csv(DATA / "equity_inputs.csv"),
+        "service": pd.read_csv(DATA / "service_scenario.csv"),
     }
 
 
@@ -29,6 +36,18 @@ def metric(mode: pd.DataFrame, name: str) -> float:
     if rows.empty:
         raise KeyError(f"missing mode metric: {name}")
     return float(rows.iloc[0])
+
+
+def hhmm_to_minutes(value: str) -> int:
+    hour, minute = map(int, value.split(":"))
+    return hour * 60 + minute
+
+
+def max_departure_gap_minutes(value: str) -> int:
+    minutes = sorted(hhmm_to_minutes(x) for x in value.split("|"))
+    if len(minutes) < 2:
+        return 0
+    return max(b - a for a, b in zip(minutes, minutes[1:]))
 
 
 def analyze_origins(origins: pd.DataFrame):
@@ -133,12 +152,18 @@ def analyze_mode_and_policy(mode: pd.DataFrame):
     other = metric(mode, "other_movement")
     avg_distance = metric(mode, "avg_vehicle_distance")
     avg_time = metric(mode, "avg_vehicle_time")
-    vehicle_km = metric(mode, "vehicle_km")
+    vehicle_mode_person_km = metric(mode, "vehicle_mode_person_km")
 
     component_sum = vehicle + public + other
     if abs(component_sum - total_movement) > 0.05:
         raise ValueError(
             f"mode component mismatch: {component_sum:.2f} != {total_movement:.2f}"
+        )
+
+    expected_person_km = vehicle * avg_distance
+    if abs(expected_person_km - vehicle_mode_person_km) > 2:
+        raise ValueError(
+            "vehicle-mode person-km must equal vehicle-mode movement × average distance"
         )
 
     mode_summary = pd.DataFrame(
@@ -150,23 +175,24 @@ def analyze_mode_and_policy(mode: pd.DataFrame):
             "avg_vehicle_distance_km": avg_distance,
             "avg_vehicle_time_min": avg_time,
             "simple_avg_speed_kmh": avg_distance / (avg_time / 60),
-            "weekly_vehicle_km": vehicle_km,
+            "weekly_vehicle_mode_person_km": vehicle_mode_person_km,
         }]
     )
     mode_summary.to_csv(OUT / "mode_summary.csv", index=False, encoding="utf-8-sig")
 
     rows = []
     for rate in TRANSFER_SCENARIOS:
-        weekly_movement = vehicle * rate
-        weekly_km = vehicle_km * rate
+        shifted_movement = vehicle * rate
+        shifted_person_km = vehicle_mode_person_km * rate
+        net_kg = shifted_person_km * NET_BUS_SHIFT_KG_PER_PKM
         rows.append(
             {
                 "transfer_rate_pct": int(rate * 100),
-                "weekly_vehicle_movement_reduction": weekly_movement,
-                "daily_vehicle_movement_reduction": weekly_movement / 7,
-                "weekly_vehicle_km_reduction": weekly_km,
-                "daily_vehicle_km_reduction": weekly_km / 7,
-                "annual_vehicle_km_reduction_simple_52w": weekly_km * 52,
+                "weekly_shifted_vehicle_mode_movements": shifted_movement,
+                "daily_shifted_vehicle_mode_movements": shifted_movement / 7,
+                "weekly_shifted_person_km": shifted_person_km,
+                "weekly_net_ghg_reduction_tco2eq": net_kg / 1000,
+                "annual_net_ghg_reduction_tco2eq_simple_52w": net_kg / 1000 * 52,
             }
         )
 
@@ -176,16 +202,63 @@ def analyze_mode_and_policy(mode: pd.DataFrame):
     plt.figure(figsize=(7, 5))
     plt.bar(
         scenarios["transfer_rate_pct"].astype(str) + "%",
-        scenarios["weekly_vehicle_km_reduction"],
+        scenarios["weekly_net_ghg_reduction_tco2eq"],
     )
-    plt.ylabel("Weekly vehicle-km reduction")
-    plt.xlabel("Transfer scenario")
-    plt.title("Vehicle-km reduction scenarios")
+    plt.ylabel("Weekly net GHG reduction (tCO2eq)")
+    plt.xlabel("Mode-shift scenario")
+    plt.title("Estimated GHG reduction scenarios")
     plt.tight_layout()
     plt.savefig(OUT / "policy_scenarios.png", dpi=180)
     plt.close()
 
     return mode_summary, scenarios
+
+
+def analyze_equity(origins: pd.DataFrame, equity: pd.DataFrame):
+    result = origins.merge(equity, on="origin", how="left", validate="one_to_one")
+    if result["population_2026_08"].isna().any():
+        raise ValueError("missing population/equity input")
+
+    demand_q3 = float(result["count"].quantile(0.75))
+
+    def classify(row):
+        if bool(row["fixed_hub"]) and row["count"] > demand_q3:
+            return "fixed_trunk"
+        if not bool(row["fixed_hub"]):
+            return "drt_feeder_priority"
+        return "timed_transfer"
+
+    result["service_type"] = result.apply(classify, axis=1)
+    result["movement_share_pct"] = result["count"] / result["count"].sum() * 100
+    result["population_share_pct"] = (
+        result["population_2026_08"] / result["population_2026_08"].sum() * 100
+    )
+    result.to_csv(
+        OUT / "equity_service_classification.csv", index=False, encoding="utf-8-sig"
+    )
+
+    summary = (
+        result.groupby("service_type", as_index=False)
+        .agg(
+            origins=("origin", "count"),
+            movement=("count", "sum"),
+            population=("population_2026_08", "sum"),
+        )
+    )
+    summary["movement_share_pct"] = summary["movement"] / result["count"].sum() * 100
+    summary["population_share_pct"] = (
+        summary["population"] / result["population_2026_08"].sum() * 100
+    )
+    summary["demand_q3_threshold"] = demand_q3
+    summary.to_csv(OUT / "equity_summary.csv", index=False, encoding="utf-8-sig")
+    return result, summary
+
+
+def analyze_service_scenario(service: pd.DataFrame):
+    result = service.copy()
+    result["max_gap_minutes"] = result["departures"].map(max_departure_gap_minutes)
+    result.to_csv(OUT / "service_scenario_summary.csv", index=False, encoding="utf-8-sig")
+    return result
 
 
 def analyze_transit(transit: pd.DataFrame):
@@ -224,10 +297,12 @@ def analyze_transit(transit: pd.DataFrame):
 
 def main():
     data = read_inputs()
-    total, _, origin_summary = analyze_origins(data["origins"])
+    total, origins, origin_summary = analyze_origins(data["origins"])
     _, destination, core8_count = analyze_od(data["od"], total)
     purpose = analyze_purposes(data["purposes"], total)
     mode, scenarios = analyze_mode_and_policy(data["mode"])
+    equity_detail, equity_summary = analyze_equity(origins[["origin", "count"]], data["equity"])
+    service = analyze_service_scenario(data["service"])
     transit = analyze_transit(data["transit"])
 
     print(f"Total movement: {total:,}")
@@ -244,6 +319,12 @@ def main():
     print(mode.to_string(index=False))
     print("\nPolicy scenarios")
     print(scenarios.to_string(index=False))
+    print("\nEquity service classification")
+    print(equity_detail.to_string(index=False))
+    print("\nEquity summary")
+    print(equity_summary.to_string(index=False))
+    print("\nService scenario")
+    print(service.to_string(index=False))
     print("\nTransit supply")
     print(transit.to_string(index=False))
 
