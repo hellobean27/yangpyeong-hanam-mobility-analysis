@@ -9,6 +9,9 @@
 - purpose_summary.csv
 - mode_summary.csv
 - policy_scenarios.csv
+- equity_service_classification.csv
+- equity_summary.csv
+- service_scenario_summary.csv (최대 배차공백 + 수요가중 다음 직결버스 대기 대리지표)
 - transit_supply_comparison.csv
 - origin_totals.png
 - key_od.png
