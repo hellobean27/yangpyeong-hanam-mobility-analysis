@@ -1,0 +1,4 @@
+origin,representative_seoul_route,seoul_weekday_runs,representative_hanam_route,hanam_weekday_runs,note
+양평읍,G9311,8,2000-2,1,"2000-2는 하남 미사권 경유"
+양서면,G9311,8,"8-8 + 2000-2",4,"8-8 3회와 2000-2 1회를 단순 합산한 대표 비교"
+서종면,2301,15,8-8,3,"8-8은 하남 신안아파트 방면"
