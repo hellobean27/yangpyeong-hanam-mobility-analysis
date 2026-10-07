@@ -28,6 +28,7 @@ def read_inputs():
         "transit": pd.read_csv(DATA / "transit_supply.csv"),
         "equity": pd.read_csv(DATA / "equity_inputs.csv"),
         "service": pd.read_csv(DATA / "service_scenario.csv"),
+        "time_demand": pd.read_csv(DATA / "time_demand_hanam.csv"),
     }
 
 
@@ -254,9 +255,51 @@ def analyze_equity(origins: pd.DataFrame, equity: pd.DataFrame):
     return result, summary
 
 
-def analyze_service_scenario(service: pd.DataFrame):
+def analyze_service_scenario(service: pd.DataFrame, time_demand: pd.DataFrame):
     result = service.copy()
     result["max_gap_minutes"] = result["departures"].map(max_departure_gap_minutes)
+
+    demand = time_demand.copy()
+    demand["minute"] = demand["time"].map(hhmm_to_minutes)
+    # 대표 직결노선의 실증 운영시간(06:00~20:00) 안에서만 비교한다.
+    demand = demand[(demand["minute"] >= 360) & (demand["minute"] <= 1200)].copy()
+
+    weighted_rows = []
+    for _, row in result.iterrows():
+        departures = sorted(hhmm_to_minutes(x) for x in row["departures"].split("|"))
+        total_weight = float(demand["vehicle_daily_avg"].sum())
+        wait_weighted_sum = 0.0
+        within_60_weight = 0.0
+        within_120_weight = 0.0
+        serviceable_weight = 0.0
+
+        for _, d in demand.iterrows():
+            future = [dep for dep in departures if dep >= int(d["minute"])]
+            weight = float(d["vehicle_daily_avg"])
+            if not future:
+                continue
+            wait = future[0] - int(d["minute"])
+            serviceable_weight += weight
+            wait_weighted_sum += wait * weight
+            if wait <= 60:
+                within_60_weight += weight
+            if wait <= 120:
+                within_120_weight += weight
+
+        weighted_rows.append(
+            {
+                "scenario": row["scenario"],
+                "weighted_next_bus_wait_proxy_min": (
+                    wait_weighted_sum / serviceable_weight if serviceable_weight else None
+                ),
+                "share_with_next_bus_within_60min": within_60_weight / total_weight,
+                "share_with_next_bus_within_120min": within_120_weight / total_weight,
+                "serviceable_demand_share_before_last_departure": serviceable_weight / total_weight,
+            }
+        )
+
+    weighted = pd.DataFrame(weighted_rows)
+    result = result.merge(weighted, on="scenario", how="left", validate="one_to_one")
     result.to_csv(OUT / "service_scenario_summary.csv", index=False, encoding="utf-8-sig")
     return result
 
@@ -302,7 +345,7 @@ def main():
     purpose = analyze_purposes(data["purposes"], total)
     mode, scenarios = analyze_mode_and_policy(data["mode"])
     equity_detail, equity_summary = analyze_equity(origins[["origin", "count"]], data["equity"])
-    service = analyze_service_scenario(data["service"])
+    service = analyze_service_scenario(data["service"], data["time_demand"])
     transit = analyze_transit(data["transit"])
 
     print(f"Total movement: {total:,}")
