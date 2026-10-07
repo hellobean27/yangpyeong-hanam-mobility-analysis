@@ -76,3 +76,15 @@ def test_service_scenario_max_gap():
     proposal = df.loc[df["scenario"] == "proposal", "departures"].iloc[0]
     assert max_gap(current) == 405
     assert max_gap(proposal) == 120
+
+
+def test_time_demand_and_service_proxy_inputs():
+    demand = pd.read_csv(DATA / "time_demand_hanam.csv")
+    assert math.isclose(
+        float(demand.loc[demand["time"] == "14:00", "vehicle_daily_avg"].iloc[0]),
+        659.136,
+        abs_tol=0.001,
+    )
+    service = pd.read_csv(DATA / "service_scenario.csv")
+    assert int(service.loc[service["scenario"] == "current", "weekday_runs"].iloc[0]) == 3
+    assert int(service.loc[service["scenario"] == "proposal", "weekday_runs"].iloc[0]) == 8
