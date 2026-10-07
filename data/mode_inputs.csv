@@ -1,8 +1,8 @@
 metric,value,unit,period
-total_movement,63243.68,movement-person,2026-08-24~2026-08-30
-vehicle_movement,62457.10,movement-person,2026-08-24~2026-08-30
+total_movement,63243.69,movement-person,2026-08-24~2026-08-30
+vehicle_movement,62457.11,movement-person,2026-08-24~2026-08-30
 public_transport_movement,574.34,movement-person,2026-08-24~2026-08-30
 other_movement,212.24,movement-person,2026-08-24~2026-08-30
-avg_vehicle_distance,24.009,km/person-movement,2026-08-24~2026-08-30
+avg_vehicle_distance,24.00916456829335,km/person-movement,2026-08-24~2026-08-30
 avg_vehicle_time,67.47,minute/person-movement,2026-08-24~2026-08-30
-vehicle_mode_person_km,1499543,person-km,2026-08-24~2026-08-30
+vehicle_mode_person_km,1499543.03245,person-km,2026-08-24~2026-08-30
